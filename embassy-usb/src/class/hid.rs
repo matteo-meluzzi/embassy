@@ -63,7 +63,7 @@ pub struct Config<'d> {
     pub report_descriptor: &'d [u8],
 
     /// Handler for control requests.
-    pub request_handler: Option<&'d mut dyn RequestHandler>,
+    pub request_handler: Option<&'d dyn RequestHandler>,
 
     /// Configures how frequently the host should poll for reading/writing HID reports.
     ///
@@ -404,13 +404,13 @@ pub trait RequestHandler {
     /// Reads the value of report `id` into `buf` returning the size.
     ///
     /// Returns `None` if `id` is invalid or no data is available.
-    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+    fn get_report(&self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
         let _ = (id, buf);
         None
     }
 
     /// Sets the value of report `id` to `data`.
-    fn set_report(&mut self, id: ReportId, data: &[u8]) -> OutResponse {
+    fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
         let _ = (id, data);
         OutResponse::Rejected
     }
@@ -425,7 +425,7 @@ pub trait RequestHandler {
     /// Sets the current hid protocol to `protocol`.
     ///
     /// Accepts only `Report` protocol by default.
-    fn set_protocol(&mut self, protocol: HidProtocolMode) -> OutResponse {
+    fn set_protocol(&self, protocol: HidProtocolMode) -> OutResponse {
         match protocol {
             HidProtocolMode::Report => OutResponse::Accepted,
             HidProtocolMode::Boot => OutResponse::Rejected,
@@ -437,7 +437,7 @@ pub trait RequestHandler {
     /// If `id` is `None`, get the idle rate for all reports. Returning `None`
     /// will reject the control request. Any duration at or above 1.024 seconds
     /// or below 4ms will be returned as an indefinite idle rate.
-    fn get_idle_ms(&mut self, id: Option<ReportId>) -> Option<u32> {
+    fn get_idle_ms(&self, id: Option<ReportId>) -> Option<u32> {
         let _ = id;
         None
     }
@@ -446,7 +446,7 @@ pub trait RequestHandler {
     ///
     /// If `id` is `None`, set the idle rate of all input reports to `dur`. If
     /// an indefinite duration is requested, `dur` will be set to `u32::MAX`.
-    fn set_idle_ms(&mut self, id: Option<ReportId>, duration_ms: u32) {
+    fn set_idle_ms(&self, id: Option<ReportId>, duration_ms: u32) {
         let _ = (id, duration_ms);
     }
 }
@@ -454,7 +454,7 @@ pub trait RequestHandler {
 struct Control<'d> {
     if_num: InterfaceNumber,
     report_descriptor: &'d [u8],
-    request_handler: Option<&'d mut dyn RequestHandler>,
+    request_handler: Option<&'d dyn RequestHandler>,
     out_report_offset: &'d AtomicUsize,
     hid_descriptor: [u8; 9],
 }
@@ -463,7 +463,7 @@ impl<'d> Control<'d> {
     fn new(
         if_num: InterfaceNumber,
         report_descriptor: &'d [u8],
-        request_handler: Option<&'d mut dyn RequestHandler>,
+        request_handler: Option<&'d dyn RequestHandler>,
         out_report_offset: &'d AtomicUsize,
     ) -> Self {
         Control {
@@ -511,7 +511,7 @@ impl<'d> Handler for Control<'d> {
         trace!("HID control_out {:?} {=[u8]:x}", req, data);
         match req.request {
             HID_REQ_SET_IDLE => {
-                if let Some(handler) = self.request_handler.as_mut() {
+                if let Some(handler) = self.request_handler {
                     let id = req.value as u8;
                     let id = (id != 0).then_some(ReportId::In(id));
                     let dur = u32::from(req.value >> 8);
@@ -520,13 +520,13 @@ impl<'d> Handler for Control<'d> {
                 }
                 Some(OutResponse::Accepted)
             }
-            HID_REQ_SET_REPORT => match (ReportId::try_from(req.value), self.request_handler.as_mut()) {
+            HID_REQ_SET_REPORT => match (ReportId::try_from(req.value), self.request_handler) {
                 (Ok(id), Some(handler)) => Some(handler.set_report(id, data)),
                 _ => Some(OutResponse::Rejected),
             },
             HID_REQ_SET_PROTOCOL => {
                 let hid_protocol = HidProtocolMode::from(req.value as u8);
-                match (self.request_handler.as_mut(), hid_protocol) {
+                match (self.request_handler, hid_protocol) {
                     (Some(request_handler), hid_protocol) => Some(request_handler.set_protocol(hid_protocol)),
                     (None, HidProtocolMode::Report) => Some(OutResponse::Accepted),
                     (None, HidProtocolMode::Boot) => {
@@ -559,7 +559,7 @@ impl<'d> Handler for Control<'d> {
                 match req.request {
                     HID_REQ_GET_REPORT => {
                         let size = match ReportId::try_from(req.value) {
-                            Ok(id) => self.request_handler.as_mut().and_then(|x| x.get_report(id, buf)),
+                            Ok(id) => self.request_handler.and_then(|x| x.get_report(id, buf)),
                             Err(_) => None,
                         };
 
@@ -570,7 +570,7 @@ impl<'d> Handler for Control<'d> {
                         }
                     }
                     HID_REQ_GET_IDLE => {
-                        if let Some(handler) = self.request_handler.as_mut() {
+                        if let Some(handler) = self.request_handler {
                             let id = req.value as u8;
                             let id = (id != 0).then_some(ReportId::In(id));
                             if let Some(dur) = handler.get_idle_ms(id) {
@@ -585,7 +585,7 @@ impl<'d> Handler for Control<'d> {
                         }
                     }
                     HID_REQ_GET_PROTOCOL => {
-                        if let Some(request_handler) = self.request_handler.as_mut() {
+                        if let Some(request_handler) = self.request_handler {
                             buf[0] = request_handler.get_protocol() as u8;
                         } else {
                             // Return `Report` protocol mode by default
